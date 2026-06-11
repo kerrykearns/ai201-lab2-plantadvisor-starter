@@ -53,14 +53,17 @@ normalized = plant_name.strip().lower()
 
 #### Search order
 
-Search in this order: direct key → display name → aliases. Keys are the fastest
-lookup (O(1) dict access), so check those first. Display names are the next most
-likely match for clean user input. Aliases are the broadest net, so they go last.
+Search in this order: direct key → display name → scientific name → aliases.
+Keys are the fastest lookup (O(1) dict access), so check those first. Display
+names are the next most likely match for clean user input. Scientific names
+matter because the tool definition tells the LLM it can pass them. Aliases are
+the broadest net, so they go last.
 
 ```
 1. Direct key match: normalized in _plant_db
 2. Display name match: plant["display_name"].lower() == normalized
-3. Alias match: normalized in [alias.lower() for alias in plant["aliases"]]
+3. Scientific name match: plant["scientific_name"].lower() == normalized
+4. Alias match: normalized in [alias.lower() for alias in plant["aliases"]]
 ```
 
 ---
@@ -166,7 +169,7 @@ The full season dict from `_season_data`, plus a `detected_season` boolean. Exam
 
 ```python
 {
-    "season": "spring",
+    "name": "Spring",
     "watering": "Increase watering frequency as plants break dormancy ...",
     "fertilizing": "Resume feeding with a balanced fertilizer ...",
     "light": "Days are lengthening — move plants closer to windows ...",

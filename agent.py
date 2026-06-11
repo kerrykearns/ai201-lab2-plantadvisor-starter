@@ -85,6 +85,10 @@ SYSTEM_PROMPT = (
 
 def dispatch_tool(tool_name: str, tool_args: dict) -> str:
     """Route a tool call to the correct function and return the result as a JSON string."""
+    # Some models send arguments as JSON "null" for no-argument tools, which
+    # json.loads() turns into None — normalize so .get() below is always safe.
+    if not isinstance(tool_args, dict):
+        tool_args = {}
     print(f"  → Tool call: {tool_name}({tool_args})")
     if tool_name == "lookup_plant":
         result = lookup_plant(tool_args["plant_name"])
@@ -124,7 +128,7 @@ def run_agent(user_message: str, history: list) -> str:
       - The assistant message must be appended BEFORE tool results
       - Tool result messages use role="tool" with a tool_call_id field
       - Append the assistant's message object directly (not just its content)
-      - The history format from Gradio: list of [user_message, assistant_message] pairs
+      - The history format from Gradio: list of {"role": ..., "content": ...} dicts
 
     Before writing code, complete specs/agent-loop-spec.md.
     """
