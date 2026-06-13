@@ -13,10 +13,18 @@ with open(os.path.join(DATA_PATH, "seasons.json"), encoding="utf-8") as f:
 
 # Maps calendar months to seasons for auto-detection.
 _MONTH_TO_SEASON = {
-    12: "winter", 1: "winter", 2: "winter",
-    3: "spring", 4: "spring", 5: "spring",
-    6: "summer", 7: "summer", 8: "summer",
-    9: "fall",  10: "fall",  11: "fall",
+    12: "winter",
+    1: "winter",
+    2: "winter",
+    3: "spring",
+    4: "spring",
+    5: "spring",
+    6: "summer",
+    7: "summer",
+    8: "summer",
+    9: "fall",
+    10: "fall",
+    11: "fall",
 }
 
 
@@ -52,10 +60,36 @@ def lookup_plant(plant_name: str) -> dict:
 
     Before writing code, complete the lookup_plant section of specs/tool-functions-spec.md.
     """
+
+
+def lookup_plant(plant_name: str) -> dict:
+    # strip whitespace and lowercase
+    normalized = plant_name.strip().lower()
+
+    for slug, plant in _plant_db.items():
+        # Match the slug key directly (e.g. "pothos", "snake_plant")
+        if normalized == slug.lower():
+            return {"found": True, "plant": plant}
+
+        # Match the display name (e.g. "Pothos" → normalized to "pothos")
+        if normalized == plant.get("display_name", "").lower():
+            return {"found": True, "plant": plant}
+
+        # Match any alias (e.g. "devil's ivy", "mother-in-law's tongue")
+        if normalized in [alias.lower() for alias in plant.get("aliases", [])]:
+            return {"found": True, "plant": plant}
+
     return {
         "found": False,
         "name": plant_name,
-        "message": "Plant lookup not yet implemented. Complete Milestone 1.",
+        "message": (
+            f"'{plant_name}' is not in the plant database. "
+            "Do not invent specific care data. Instead: acknowledge the gap, "
+            "identify what type of plant it likely is based on its name or description, "
+            "and offer general care advice for that plant category. "
+            "For example, succulents need infrequent watering; tropicals need humidity; "
+            "ferns need consistent moisture and shade."
+        ),
     }
 
 

@@ -1,7 +1,7 @@
 import json
 from groq import Groq
 from config import GROQ_API_KEY, LLM_MODEL, MAX_TOOL_ROUNDS
-from tools import lookup_plant, get_seasonal_conditions
+from tools import lookup_plant, get_seasonal_conditions, _plant_db
 
 _client = Groq(api_key=GROQ_API_KEY)
 
@@ -69,10 +69,19 @@ SYSTEM_PROMPT = (
     "Help users care for their houseplants by looking up specific plant information "
     "and current seasonal conditions using your available tools.\n\n"
     "Always use your tools to look up plant-specific information before answering — "
-    "don't rely on your general knowledge alone. If a plant isn't in your database, "
-    "say so clearly and offer general guidance based on what the user describes.\n\n"
-    "Keep your advice practical and specific. Cite the source of your information "
-    "when you have it (e.g., 'According to the care data for your monstera...')."
+    "don't rely on your general knowledge alone.\n\n"
+    "When lookup_plant returns found: False, follow this pattern exactly:\n"
+    "  1. Acknowledge clearly that the plant isn't in your database.\n"
+    "  2. Identify what category of plant it likely is (succulent, tropical, fern, etc.).\n"
+    "  3. Give 2-3 practical care tips for that category.\n"
+    "  4. Suggest a reliable resource for specific data (e.g. the ASPCA plant database, "
+    "     a local nursery, or the American Horticultural Society).\n"
+    "Never invent specific watering schedules or measurements for plants not in your database.\n\n"
+    "When you have seasonal data, always state the specific season by name and "
+    "give at least one concrete adjustment from it.\n\n"
+    "You only answer questions about houseplants and plant care. If the user asks "
+    "about something unrelated — cars, food, sports, etc. — politely explain that "
+    "you're a plant care advisor and decline to answer."
 )
 
 # ──────────────────────────────────────────────
@@ -82,6 +91,7 @@ SYSTEM_PROMPT = (
 # Python functions in tools.py, and returns results as JSON strings (which is
 # what the Groq API expects for tool results).
 # ──────────────────────────────────────────────
+
 
 def dispatch_tool(tool_name: str, tool_args: dict) -> str:
     """Route a tool call to the correct function and return the result as a JSON string."""
@@ -96,7 +106,9 @@ def dispatch_tool(tool_name: str, tool_args: dict) -> str:
         result = get_seasonal_conditions(tool_args.get("season"))
     else:
         result = {"error": f"Unknown tool: {tool_name}"}
-    print(f"  ← Result: {json.dumps(result)[:120]}{'...' if len(json.dumps(result)) > 120 else ''}")
+    print(
+        f"  ← Result: {json.dumps(result)[:120]}{'...' if len(json.dumps(result)) > 120 else ''}"
+    )
     return json.dumps(result)
 
 
@@ -104,8 +116,10 @@ def dispatch_tool(tool_name: str, tool_args: dict) -> str:
 # Agent loop
 # ──────────────────────────────────────────────
 
+
+"""
 def run_agent(user_message: str, history: list) -> str:
-    """
+   
     Run the plant care agent for one user turn and return its response.
 
     TODO — Milestone 2:
@@ -131,5 +145,160 @@ def run_agent(user_message: str, history: list) -> str:
       - The history format from Gradio: list of {"role": ..., "content": ...} dicts
 
     Before writing code, complete specs/agent-loop-spec.md.
+
+
     """
+
+
+def extract_plant_memory(history: list) -> str:
+    """
+    Scan conversation history for plant names and issues the user has mentioned.
+    Returns a memory block to inject into the system prompt, or empty string if none.
+    """
+    mentioned_plants = []
+    known_issues = []
+
+    for human, assistant in history:
+        if not human:
+            continue
+
+        human_lower = human.lower()
+
+        # Check every plant in the database against what the user said
+        for slug, plant in _plant_db.items():
+            names_to_check = (
+                [slug]
+                + [plant["display_name"].lower()]
+                + [a.lower() for a in plant.get("aliases", [])]
+            )
+            for name in names_to_check:
+                if (
+                    name in human_lower
+                    and plant["display_name"] not in mentioned_plants
+                ):
+                    mentioned_plants.append(plant["display_name"])
+
+        # Simple issue detection — look for problem keywords near plant mentions
+        issue_keywords = [
+            "yellow",
+            "brown",
+            "drooping",
+            "wilting",
+            "dying",
+            "mushy",
+            "crispy",
+            "spots",
+            "bugs",
+            "gnats",
+            "root rot",
+            "overwater",
+        ]
+        for keyword in issue_keywords:
+            if keyword in human_lower:
+                # Pair the issue with the most recently mentioned plant if possible
+                plant_ref = (
+                    mentioned_plants[-1] if mentioned_plants else "unknown plant"
+                )
+                issue = f"{plant_ref} — {keyword}"
+                if issue not in known_issues:
+                    known_issues.append(issue)
+
+    if not mentioned_plants:
+        return ""
+
+    lines = [
+        "\n--- Conversation memory ---",
+        f"Plants this user has mentioned: {', '.join(mentioned_plants)}",
+    ]
+    if known_issues:
+        lines.append(f"Issues described: {', '.join(known_issues)}")
+    lines.append(
+        "When answering general questions, connect your advice to these specific "
+        "plants where relevant. Do not re-look them up unless the user asks something new."
+    )
+    lines.append("--- End memory ---")
+
+    return "\n".join(lines)
+
+
+def run_agent(user_message: str, history: list) -> str:
+    memory_block = extract_plant_memory(history)
+    system_content = SYSTEM_PROMPT + memory_block
+
+    messages = [{"role": "system", "content": system_content}]
+
+    for human, assistant in history:
+        if human:
+            messages.append({"role": "user", "content": human})
+        if assistant:
+            # Only append assistant messages that are plain text
+            # Skip anything that looks like it contains tool call artifacts
+            if isinstance(assistant, str):
+                messages.append({"role": "assistant", "content": assistant})
+
+    messages.append({"role": "user", "content": user_message})
+
+    for _ in range(MAX_TOOL_ROUNDS):
+        try:
+            response = _client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+            )
+        except Exception as e:
+            print(f"  ✗ API error: {e}")
+            return (
+                "Something went wrong while processing your request. Please try again."
+            )
+
+        assistant_message = response.choices[0].message
+
+        if not assistant_message.tool_calls:
+            return assistant_message.content
+
+        # Append raw object — never reconstruct this as a dict
+        messages.append(assistant_message)
+
+        for tool_call in assistant_message.tool_calls:
+            tool_result = dispatch_tool(
+                tool_call.function.name,
+                json.loads(tool_call.function.arguments),
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result,
+                }
+            )
+
+    # MAX_TOOL_ROUNDS hit
+    print("  ✗ MAX_TOOL_ROUNDS reached")
+    tool_results_collected = [
+        m["content"]
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+
+    if tool_results_collected:
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "You've reached the maximum number of tool calls. "
+                    "Give the best answer you can with the information already retrieved. "
+                    "Clearly note if any part of the question couldn't be fully addressed."
+                ),
+            }
+        )
+        try:
+            final = _client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+            )
+            return final.choices[0].message.content
+        except Exception as e:
+            print(f"  ✗ Final summary error: {e}")
+
+    # Safety valve — hit MAX_TOOL_ROUNDS without a final answer
     return "🌱 Agent not yet implemented. Complete Milestone 2 to activate the Plant Advisor."
